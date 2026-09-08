@@ -1,8 +1,8 @@
 # AI Ops Copilot
 
-> **A production-minded incident triage copilot — classify, investigate, retrieve runbooks, assess risk, request human approval, and preserve an audit trail.**
+> **A production-minded incident triage copilot — classify, investigate, retrieve runbooks, assess risk, request human approval, preserve durable state, and maintain an audit trail.**
 
-Most AI-operations demos jump straight from an alert to a suggested fix. Real operational systems need stronger boundaries: **evidence, known runbooks, explicit risk, human judgment for consequential actions, and a record of why the recommendation was made.**
+Most AI-operations demos jump straight from an alert to a suggested fix. Real operational systems need stronger boundaries: **evidence, known runbooks, explicit risk, human judgment for consequential actions, durable workflow state, and a record of why the recommendation was made.**
 
 This project is a compact reference implementation of that workflow.
 
@@ -25,7 +25,9 @@ Risk gate
   ↓
 Human approval when required
   ↓
-Audited recommendation ready for operator action
+Durable incident / recommendation / approval state
+  ↓
+Append-only audit evidence
 ```
 
 ## What this demonstrates
@@ -37,7 +39,8 @@ Audited recommendation ready for operator action
 - Severity-aware recommendation policy
 - Human approval for high-risk operations
 - Explicit blocked / failed / completed states
-- Audit events for important decisions
+- Durable incident, recommendation, approval, and workflow-state persistence
+- Append-only audit-event persistence and restart recovery
 - Deterministic offline demo — no API key required
 - Automated tests for safety boundaries
 - GitHub Actions CI
@@ -50,45 +53,25 @@ A model-backed classifier may propose only category, severity, confidence, evide
 
 A `completed` workflow means the recommendation has passed the configured decision gates and is ready for a human operator. Unknown incidents or missing runbooks are blocked rather than answered with unsupported advice.
 
-That boundary is deliberate.
-
-## Example incident
-
-```text
-Checkout API returning 5xx errors
-        ↓
-Category: availability
-Severity: critical
-Confidence: 0.96
-        ↓
-Availability runbook retrieved
-        ↓
-Prepare rollback / failover recommendation
-        ↓
-Risk: high
-        ↓
-Human approval required
-        ↓
-Recommendation + audit evidence
-```
+Persistence does not grant execution authority. It only preserves workflow state and evidence so a process restart does not erase what happened.
 
 ## Pluggable classifier
 
-The default classifier remains deterministic and offline. A real model can be introduced through the provider-neutral `ClassificationModelProvider` interface and `LLMIncidentClassifier` adapter.
+The default classifier remains deterministic and offline. A real model can be introduced through the provider-neutral `ClassificationModelProvider` interface and `LLMIncidentClassifier` adapter. Malformed JSON, unsupported categories/severities, invalid confidence, empty evidence items, and extra fields are rejected before downstream workflow policy runs. See [`docs/classifier-adapters.md`](docs/classifier-adapters.md).
 
-Strict model output:
+## Durable storage
 
-```json
-{
-  "category": "availability",
-  "severity": "critical",
-  "confidence": 0.96,
-  "evidence": ["5xx", "all users"],
-  "rationale": "Signals indicate a production availability incident."
-}
+`AIOpsCopilot` accepts an `IncidentStore`. The repository includes `SQLiteIncidentStore` as a deterministic reference adapter for local testing and restart recovery.
+
+```python
+from ai_ops_copilot import AIOpsCopilot, SQLiteIncidentStore
+
+store = SQLiteIncidentStore("ai-ops.db")
+copilot = AIOpsCopilot(store=store)
+recovered = copilot.recover("incident-id")
 ```
 
-Malformed JSON, unsupported categories/severities, invalid confidence, empty evidence items, and extra fields are rejected before downstream workflow policy runs. See [`docs/classifier-adapters.md`](docs/classifier-adapters.md).
+The adapter persists incident records, workflow snapshots, recommendations, approvals, and append-only audit events. See [`docs/storage.md`](docs/storage.md) for the persistence boundary and migration strategy.
 
 ## Project structure
 
@@ -98,17 +81,20 @@ src/ai_ops_copilot/
   llm_classifier.py   # provider-neutral model adapter + strict validation
   runbooks.py         # controlled runbook registry + retrieval
   policy.py           # recommendation and risk policy
-  copilot.py          # workflow orchestration and approval gate
+  copilot.py          # workflow orchestration, approval gate, persistence hook
+  storage.py          # IncidentStore protocol + SQLite reference adapter
   models.py           # typed domain model
   demo.py             # deterministic end-to-end scenario
 
 tests/
   test_copilot.py
   test_llm_classifier.py
+  test_storage.py
 
 docs/
   architecture.md
   classifier-adapters.md
+  storage.md
   demo.md
 ```
 
@@ -132,11 +118,11 @@ No API key or production access is required for the default demo or tests.
 4. **Block when knowledge is missing** — an unknown category does not receive invented operational advice.
 5. **Risk changes the workflow** — high-risk recommendations require approval.
 6. **Humans remain accountable** — this version produces decision support, not autonomous production mutations.
-7. **Every important transition is auditable** — the workflow records why it reached its final state.
+7. **Every important transition is auditable** — workflow state and audit evidence survive restarts.
 
 ## Current maturity
 
-**v0.2 — pluggable classification boundary**
+**v0.3 — durable workflow state**
 
 Implemented:
 
@@ -148,27 +134,28 @@ Implemented:
 - runbook retrieval
 - recommendation risk policy
 - human approval gate
-- explicit blocked and completed states
-- audit trail
+- durable incident / recommendation / approval persistence
+- append-only audit-event persistence
+- restart recovery
+- versioned migration marker
 - safety-focused tests
 - CI
-- architecture and classifier adapter documentation
+- architecture, classifier-adapter, and storage documentation
 
 Next:
 
-- durable incident and audit persistence
 - observability / telemetry adapters
+- incident/ticket connector adapters
 - semantic runbook retrieval
 - incident timeline summarization
 - recommendation confidence and evidence coverage
 - time-bound approval fingerprints
-- ServiceNow / PagerDuty-style connector abstractions
 
 ## Why I built this
 
 My background is in enterprise technology, and I’m transitioning deeper into AI engineering. Operations is a useful place to connect both worlds: the AI has to understand messy real signals, respect business risk, interact with known procedures, and know when a person must make the final call.
 
-This repository is public engineering proof of that transition — focused on **Agentic AI, enterprise automation, workflow orchestration, human-in-the-loop controls, and reliable decision support**.
+This repository is public engineering proof of that transition — focused on **Agentic AI, enterprise automation, workflow orchestration, human-in-the-loop controls, durable state, and reliable decision support**.
 
 ---
 
