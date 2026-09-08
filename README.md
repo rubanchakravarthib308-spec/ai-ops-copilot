@@ -2,7 +2,7 @@
 
 > **A production-minded incident triage copilot — classify, investigate, retrieve runbooks, assess risk, request human approval, preserve durable state, and maintain an audit trail.**
 
-Most AI-operations demos jump straight from an alert to a suggested fix. Real operational systems need stronger boundaries: **evidence, known runbooks, explicit risk, human judgment for consequential actions, durable workflow state, and a record of why the recommendation was made.**
+Most AI-operations demos jump straight from an alert to a suggested fix. Real operational systems need stronger boundaries: **evidence, known runbooks, explicit risk, human judgment for consequential actions, durable workflow state, controlled external reads, and a record of why the recommendation was made.**
 
 This project is a compact reference implementation of that workflow.
 
@@ -11,11 +11,13 @@ This project is a compact reference implementation of that workflow.
 ```text
 Incident
   ↓
+Observability / incident-system reads
+  ↓
+Normalized evidence
+  ↓
 Classification + severity + confidence
   ↓
 Structured validation
-  ↓
-Evidence extraction
   ↓
 Runbook retrieval
   ↓
@@ -34,6 +36,10 @@ Append-only audit evidence
 
 - Deterministic incident classification with explicit evidence
 - Provider-neutral LLM classifier adapter with strict structured-output validation
+- Provider-neutral observability and incident/ticket connector interfaces
+- Normalized external evidence model
+- Fail-closed connector error handling
+- Audited external reads
 - Classification confidence and evidence fields
 - Runbook retrieval from a controlled registry
 - Severity-aware recommendation policy
@@ -41,7 +47,7 @@ Append-only audit evidence
 - Explicit blocked / failed / completed states
 - Durable incident, recommendation, approval, and workflow-state persistence
 - Append-only audit-event persistence and restart recovery
-- Deterministic offline demo — no API key required
+- Deterministic offline demo and fake connectors — no API key required
 - Automated tests for safety boundaries
 - GitHub Actions CI
 
@@ -49,15 +55,34 @@ Append-only audit evidence
 
 This repository **does not autonomously mutate production systems**.
 
-A model-backed classifier may propose only category, severity, confidence, evidence, and rationale. It cannot select an approval outcome or execute a change. The proposal must pass strict validation before the existing controlled runbook, recommendation policy, risk gate, and human-approval workflow continue.
+A model-backed classifier may propose only category, severity, confidence, evidence, and rationale. External connectors are read-only evidence adapters. Neither models nor connectors can select approval outcomes or execute changes. All data still flows through controlled runbook retrieval, recommendation policy, risk gates, and human approval.
 
-A `completed` workflow means the recommendation has passed the configured decision gates and is ready for a human operator. Unknown incidents or missing runbooks are blocked rather than answered with unsupported advice.
+Configured connector failures block the workflow instead of silently proceeding as though external evidence was available.
 
 Persistence does not grant execution authority. It only preserves workflow state and evidence so a process restart does not erase what happened.
 
 ## Pluggable classifier
 
 The default classifier remains deterministic and offline. A real model can be introduced through the provider-neutral `ClassificationModelProvider` interface and `LLMIncidentClassifier` adapter. Malformed JSON, unsupported categories/severities, invalid confidence, empty evidence items, and extra fields are rejected before downstream workflow policy runs. See [`docs/classifier-adapters.md`](docs/classifier-adapters.md).
+
+## Operational connectors
+
+`AIOpsCopilot` accepts optional `ObservabilityConnector` and `IncidentConnector` implementations. Provider-specific payloads are normalized into `NormalizedEvidence` before classification.
+
+```python
+from ai_ops_copilot import (
+    AIOpsCopilot,
+    FakeObservabilityConnector,
+    NormalizedEvidence,
+)
+
+connector = FakeObservabilityConnector(
+    evidence=(NormalizedEvidence("metrics", "signal", "5xx outage"),)
+)
+copilot = AIOpsCopilot(observability_connector=connector)
+```
+
+Every configured external read creates an audit event. Connector failures are fail-closed. See [`docs/connectors.md`](docs/connectors.md) for the provider boundary and adapter contract.
 
 ## Durable storage
 
@@ -79,9 +104,10 @@ The adapter persists incident records, workflow snapshots, recommendations, appr
 src/ai_ops_copilot/
   classifier.py       # deterministic incident classification
   llm_classifier.py   # provider-neutral model adapter + strict validation
+  connectors.py       # observability/incident interfaces + normalized evidence + test fakes
   runbooks.py         # controlled runbook registry + retrieval
   policy.py           # recommendation and risk policy
-  copilot.py          # workflow orchestration, approval gate, persistence hook
+  copilot.py          # workflow orchestration, external reads, approval gate, persistence hook
   storage.py          # IncidentStore protocol + SQLite reference adapter
   models.py           # typed domain model
   demo.py             # deterministic end-to-end scenario
@@ -90,10 +116,12 @@ tests/
   test_copilot.py
   test_llm_classifier.py
   test_storage.py
+  test_connectors.py
 
 docs/
   architecture.md
   classifier-adapters.md
+  connectors.md
   storage.md
   demo.md
 ```
@@ -114,15 +142,16 @@ No API key or production access is required for the default demo or tests.
 
 1. **Evidence before recommendation** — classification exposes signals rather than hiding the reasoning path.
 2. **Model proposals are not authority** — LLM output is validated and cannot bypass workflow policy.
-3. **Known guidance before improvisation** — recommendations are grounded in registered runbooks.
-4. **Block when knowledge is missing** — an unknown category does not receive invented operational advice.
-5. **Risk changes the workflow** — high-risk recommendations require approval.
-6. **Humans remain accountable** — this version produces decision support, not autonomous production mutations.
-7. **Every important transition is auditable** — workflow state and audit evidence survive restarts.
+3. **External systems are evidence sources, not authorities** — connectors are read-only and audited.
+4. **Known guidance before improvisation** — recommendations are grounded in registered runbooks.
+5. **Block when knowledge is missing** — unknown categories or failed required reads do not receive invented operational advice.
+6. **Risk changes the workflow** — high-risk recommendations require approval.
+7. **Humans remain accountable** — this version produces decision support, not autonomous production mutations.
+8. **Every important transition is auditable** — workflow state and audit evidence survive restarts.
 
 ## Current maturity
 
-**v0.3 — durable workflow state**
+**v0.4 — operational integration boundaries**
 
 Implemented:
 
@@ -130,7 +159,12 @@ Implemented:
 - provider-neutral LLM classifier adapter
 - strict structured-output validation
 - classification confidence and evidence
-- severity assessment
+- provider-neutral observability connector interface
+- provider-neutral incident/ticket connector interface
+- normalized external evidence model
+- fail-closed connector failure handling
+- audit events for external reads
+- deterministic fake connectors
 - runbook retrieval
 - recommendation risk policy
 - human approval gate
@@ -140,12 +174,10 @@ Implemented:
 - versioned migration marker
 - safety-focused tests
 - CI
-- architecture, classifier-adapter, and storage documentation
+- classifier, connector, and storage documentation
 
 Next:
 
-- observability / telemetry adapters
-- incident/ticket connector adapters
 - semantic runbook retrieval
 - incident timeline summarization
 - recommendation confidence and evidence coverage
@@ -155,7 +187,7 @@ Next:
 
 My background is in enterprise technology, and I’m transitioning deeper into AI engineering. Operations is a useful place to connect both worlds: the AI has to understand messy real signals, respect business risk, interact with known procedures, and know when a person must make the final call.
 
-This repository is public engineering proof of that transition — focused on **Agentic AI, enterprise automation, workflow orchestration, human-in-the-loop controls, durable state, and reliable decision support**.
+This repository is public engineering proof of that transition — focused on **Agentic AI, enterprise automation, workflow orchestration, human-in-the-loop controls, durable state, controlled integrations, and reliable decision support**.
 
 ---
 
