@@ -1,3 +1,11 @@
+from .connectors import (
+    ConnectorError,
+    FakeIncidentConnector,
+    FakeObservabilityConnector,
+    IncidentConnector,
+    NormalizedEvidence,
+    ObservabilityConnector,
+)
 from .copilot import AIOpsCopilot, ClassifierLike, IncidentClassifier
 from .llm_classifier import (
     ClassificationModelProvider,
@@ -25,4 +33,10 @@ __all__ = [
     "WorkflowResult",
     "IncidentStore",
     "SQLiteIncidentStore",
+    "ConnectorError",
+    "NormalizedEvidence",
+    "ObservabilityConnector",
+    "IncidentConnector",
+    "FakeObservabilityConnector",
+    "FakeIncidentConnector",
 ]
