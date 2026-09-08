@@ -1,27 +1,47 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Protocol
 
 from .classifier import classify_incident
-from .models import ApprovalDecision, AuditEvent, Incident, WorkflowResult
+from .models import ApprovalDecision, AuditEvent, Incident, IncidentAnalysis, WorkflowResult
 from .policy import recommend_action
 from .runbooks import retrieve_runbook
 
 ApprovalProvider = Callable[[str, str], ApprovalDecision]
 
 
+class IncidentClassifier(Protocol):
+    def classify(self, incident: Incident) -> IncidentAnalysis: ...
+
+
+ClassifierFunction = Callable[[Incident], IncidentAnalysis]
+ClassifierLike = IncidentClassifier | ClassifierFunction
+
+
+def _run_classifier(classifier: ClassifierLike, incident: Incident) -> IncidentAnalysis:
+    if callable(classifier):
+        return classifier(incident)
+    return classifier.classify(incident)
+
+
 class AIOpsCopilot:
-    def __init__(self, approval_provider: ApprovalProvider | None = None) -> None:
+    def __init__(
+        self,
+        approval_provider: ApprovalProvider | None = None,
+        classifier: ClassifierLike = classify_incident,
+    ) -> None:
         self.approval_provider = approval_provider
+        self.classifier = classifier
 
     def run(self, incident: Incident) -> WorkflowResult:
         audit: list[AuditEvent] = [AuditEvent("incident_received", incident.title)]
 
-        analysis = classify_incident(incident)
+        analysis = _run_classifier(self.classifier, incident)
         audit.append(
             AuditEvent(
                 "incident_classified",
-                f"category={analysis.category}; severity={analysis.severity}",
+                f"category={analysis.category}; severity={analysis.severity}; confidence={analysis.confidence:.4f}",
             )
         )
 

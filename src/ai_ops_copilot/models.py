@@ -23,6 +23,7 @@ class IncidentAnalysis:
     severity: Severity
     evidence: tuple[str, ...]
     rationale: str
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True)
