@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from .classifier import classify_incident
+from .connectors import ConnectorError, IncidentConnector, NormalizedEvidence, ObservabilityConnector
 from .models import ApprovalDecision, AuditEvent, Incident, IncidentAnalysis, WorkflowResult
 from .policy import recommend_action
 from .runbooks import retrieve_runbook
@@ -26,16 +27,24 @@ def _run_classifier(classifier: ClassifierLike, incident: Incident) -> IncidentA
     return classifier.classify(incident)
 
 
+def _evidence_signals(items: tuple[NormalizedEvidence, ...]) -> tuple[str, ...]:
+    return tuple(f"{item.kind}:{item.value}" for item in items)
+
+
 class AIOpsCopilot:
     def __init__(
         self,
         approval_provider: ApprovalProvider | None = None,
         classifier: ClassifierLike = classify_incident,
         store: IncidentStore | None = None,
+        observability_connector: ObservabilityConnector | None = None,
+        incident_connector: IncidentConnector | None = None,
     ) -> None:
         self.approval_provider = approval_provider
         self.classifier = classifier
         self.store = store
+        self.observability_connector = observability_connector
+        self.incident_connector = incident_connector
 
     def _persist(self, incident: Incident, result: WorkflowResult) -> WorkflowResult:
         if self.store is None:
@@ -51,10 +60,38 @@ class AIOpsCopilot:
             return None
         return self.store.load_result(incident_id)
 
+    def _enrich_incident(self, incident: Incident, audit: list[AuditEvent]) -> tuple[Incident, bool]:
+        signals = list(incident.signals)
+        connectors = (
+            ("observability", self.observability_connector),
+            ("incident_system", self.incident_connector),
+        )
+        for source, connector in connectors:
+            if connector is None:
+                continue
+            try:
+                evidence = connector.read_evidence(incident)
+            except ConnectorError as exc:
+                audit.append(AuditEvent("external_read_failed", f"source={source}; error={exc}"))
+                return incident, False
+            signals.extend(_evidence_signals(evidence))
+            audit.append(AuditEvent("external_read", f"source={source}; evidence={len(evidence)}"))
+
+        if tuple(signals) == incident.signals:
+            return incident, True
+        return Incident(
+            id=incident.id,
+            title=incident.title,
+            description=incident.description,
+            service=incident.service,
+            signals=tuple(signals),
+        ), True
+
     def run(self, incident: Incident) -> WorkflowResult:
         audit: list[AuditEvent] = [AuditEvent("incident_received", incident.title)]
+        enriched_incident, external_reads_ok = self._enrich_incident(incident, audit)
 
-        analysis = _run_classifier(self.classifier, incident)
+        analysis = _run_classifier(self.classifier, enriched_incident)
         audit.append(
             AuditEvent(
                 "incident_classified",
@@ -62,11 +99,26 @@ class AIOpsCopilot:
             )
         )
 
+        if not external_reads_ok:
+            audit.append(AuditEvent("workflow_blocked", "Required external evidence could not be read"))
+            return self._persist(
+                enriched_incident,
+                WorkflowResult(
+                    incident_id=incident.id,
+                    status="blocked",
+                    analysis=analysis,
+                    runbook=None,
+                    recommendation=None,
+                    approval=None,
+                    audit=audit,
+                ),
+            )
+
         runbook = retrieve_runbook(analysis.category)
         if runbook is None:
             audit.append(AuditEvent("runbook_missing", analysis.category))
             return self._persist(
-                incident,
+                enriched_incident,
                 WorkflowResult(
                     incident_id=incident.id,
                     status="blocked",
@@ -83,7 +135,7 @@ class AIOpsCopilot:
         if recommendation is None:
             audit.append(AuditEvent("recommendation_failed", "No safe recommendation available"))
             return self._persist(
-                incident,
+                enriched_incident,
                 WorkflowResult(
                     incident_id=incident.id,
                     status="failed",
@@ -107,7 +159,7 @@ class AIOpsCopilot:
             if self.approval_provider is None:
                 audit.append(AuditEvent("approval_required", "No approval provider configured"))
                 return self._persist(
-                    incident,
+                    enriched_incident,
                     WorkflowResult(
                         incident_id=incident.id,
                         status="blocked",
@@ -128,7 +180,7 @@ class AIOpsCopilot:
             )
             if not approval.approved:
                 return self._persist(
-                    incident,
+                    enriched_incident,
                     WorkflowResult(
                         incident_id=incident.id,
                         status="blocked",
@@ -142,7 +194,7 @@ class AIOpsCopilot:
 
         audit.append(AuditEvent("workflow_completed", "Recommendation is ready for operator action"))
         return self._persist(
-            incident,
+            enriched_incident,
             WorkflowResult(
                 incident_id=incident.id,
                 status="completed",
