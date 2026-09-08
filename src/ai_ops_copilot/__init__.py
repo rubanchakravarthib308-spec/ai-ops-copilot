@@ -7,6 +7,7 @@ from .llm_classifier import (
     validate_analysis,
 )
 from .models import Incident, IncidentAnalysis, Recommendation, Runbook, WorkflowResult
+from .storage import IncidentStore, SQLiteIncidentStore
 
 __all__ = [
     "AIOpsCopilot",
@@ -22,4 +23,6 @@ __all__ = [
     "Recommendation",
     "Runbook",
     "WorkflowResult",
+    "IncidentStore",
+    "SQLiteIncidentStore",
 ]
